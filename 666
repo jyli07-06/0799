@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>仿真示波器 · 分贝仪｜初中物理《噪声》课堂工具</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: linear-gradient(135deg, #1a2a4a 0%, #0f1c33 100%);
+    color: #e8eef7;
+    min-height: 100vh;
+    padding: 20px;
+  }
+  h1 { text-align: center; font-size: 26px; margin-bottom: 6px; letter-spacing: 1px; }
+  .subtitle { text-align: center; color: #8fa6c4; font-size: 14px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: 1fr 320px; gap: 18px; max-width: 1100px; margin: 0 auto; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
+    padding: 18px;
+  }
+  .card h2 { font-size: 17px; margin-bottom: 12px; color: #7fc4ff; }
+  canvas { width: 100%; background: #050a14; border-radius: 10px; display: block; }
+  .meter-box { text-align: center; padding: 10px 0; }
+  .db-value { font-size: 64px; font-weight: bold; color: #4ade80; font-variant-numeric: tabular-nums; }
+  .db-unit { font-size: 18px; color: #8fa6c4; }
+  .db-bar { height: 18px; background: #1c2940; border-radius: 9px; margin: 14px 0; overflow: hidden; }
+  .db-bar-fill { height: 100%; width: 0%; border-radius: 9px; background: linear-gradient(90deg,#4ade80,#facc15,#ef4444); transition: width .15s; }
+  .db-scale { display: flex; justify-content: space-between; font-size: 12px; color: #8fa6c4; }
+  button {
+    background: #2563eb; color: #fff; border: none; border-radius: 8px;
+    padding: 10px 18px; font-size: 15px; cursor: pointer; margin: 6px 4px;
+    transition: background .2s;
+  }
+  button:hover { background: #3b82f6; }
+  button.ghost { background: rgba(255,255,255,0.12); }
+  button.demo { background: #7c3aed; }
+  button.demo:hover { background: #8b5cf6; }
+  .status { font-size: 13px; color: #8fa6c4; margin-top: 8px; }
+  .legend { display: flex; gap: 18px; font-size: 13px; margin-top: 8px; flex-wrap: wrap; }
+  .legend span::before { content: "—"; margin-right: 6px; font-weight: bold; }
+  .legend .good::before { color: #4ade80; }
+  .legend .noise::before { color: #f87171; }
+  .info { font-size: 13px; line-height: 1.8; color: #b8c9de; margin-top: 10px; }
+  .tag { display:inline-block; background:#2563eb33; color:#93c5fd; padding:2px 8px; border-radius:6px; font-size:12px; margin-right:6px; }
+</style>
+</head>
+<body>
+<h1>仿真示波器 · 实时分贝仪</h1>
+<div class="subtitle">初中物理《噪声》课堂工具｜乐音波形（规则）对比噪声波形（杂乱）｜Web Audio API</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>📈 实时示波器（声音波形）</h2>
+    <canvas id="scope" height="260"></canvas>
+    <div class="legend">
+      <span class="good">乐音：波形规则、周期性重复</span>
+      <span class="noise">噪声：波形杂乱、无规律</span>
+    </div>
+    <div style="margin-top:12px">
+      <button id="btnMic">🎤 开启麦克风</button>
+      <button id="btnFreeze">📸 定格波形</button>
+      <button id="btnClear" class="ghost">🧹 清空画面</button>
+      <button id="btnStop" class="ghost">⏹ 停止</button>
+      <button class="demo" id="demoTone">▶ 播放乐音（正弦）</button>
+      <button class="demo" id="demoNoise">▶ 播放噪声（白噪）</button>
+    </div>
+    <div class="status" id="micStatus">未开启。点击“开启麦克风”后对着麦克风说话/敲击，观察波形；点“定格波形”可把当前波形冻结在屏幕上。</div>
+  </div>
+
+  <div class="card">
+    <h2>🔊 分贝仪（相对响度）</h2>
+    <div class="meter-box">
+      <div><span class="db-value" id="dbNum">--</span><span class="db-unit"> dB</span></div>
+      <div class="db-bar"><div class="db-bar-fill" id="dbFill"></div></div>
+      <div class="db-scale"><span>0</span><span>40</span><span>70</span><span>100</span><span>120</span></div>
+    </div>
+    <div class="info">
+      <span class="tag">说明</span>本分贝值为浏览器基于麦克风能量估算的<b>相对响度</b>，非专业声级计，仅供课堂定性演示。<br><br>
+      <span class="tag">参考</span>
+      30–40 dB 安静环境；70 dB 以上干扰谈话；90 dB 以上长期损害听力；120 dB 以上短暂致痛。
+    </div>
+  </div>
+</div>
+
+<script>
+let audioCtx, analyser, micStream, source, rafId;
+let demoOsc, demoGain, demoNoiseNode;
+let frozen = false;
+let frozenData = null;
+let frozenLabel = '';
+const scope = document.getElementById('scope');
+const sctx = scope.getContext('2d');
+const dbNum = document.getElementById('dbNum');
+const dbFill = document.getElementById('dbFill');
+const micStatus = document.getElementById('micStatus');
+
+function resizeCanvas(){ scope.width = scope.clientWidth; }
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+function drawWave(data, color='#4ade80'){
+  const W = scope.width, H = scope.height;
+  sctx.clearRect(0,0,W,H);
+  sctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  sctx.beginPath(); sctx.moveTo(0,H/2); sctx.lineTo(W,H/2); sctx.stroke();
+  sctx.beginPath();
+  for(let i=0;i<data.length;i++){
+    const x = i/(data.length-1)*W;
+    const y = H/2 + data[i]/128*H/2*0.9;
+    i===0 ? sctx.moveTo(x,y) : sctx.lineTo(x,y);
+  }
+  sctx.strokeStyle = color;
+  sctx.lineWidth = 2;
+  sctx.stroke();
+  if(frozenLabel){
+    sctx.fillStyle = '#ffd166';
+    sctx.font = '16px Microsoft YaHei';
+    sctx.fillText(frozenLabel, 12, 24);
+  }
+}
+
+function loop(){
+  if(!analyser){ rafId=requestAnimationFrame(loop); return; }
+  const buf = new Uint8Array(analyser.fftSize);
+  analyser.getByteTimeDomainData(buf);
+  if(frozen){
+    drawWave(frozenData);
+    rafId=requestAnimationFrame(loop);
+    return;
+  }
+  drawWave(buf);
+  let sum=0;
+  for(let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; sum+=v*v; }
+  const rms=Math.sqrt(sum/buf.length);
+  const db = rms>0 ? Math.round(20*Math.log10(rms)+70) : 0;
+  const shown = Math.max(0, Math.min(120, db));
+  dbNum.textContent = rms>0.001 ? shown : '--';
+  dbFill.style.width = Math.min(100, shown/120*100)+'%';
+  rafId=requestAnimationFrame(loop);
+}
+
+async function startMic(){
+  stopAll();
+  frozen=false; frozenData=null; frozenLabel='';
+  try{
+    micStream = await navigator.mediaDevices.getUserMedia({audio:true});
+    audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)();
+    source = audioCtx.createMediaStreamSource(micStream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+    source.connect(analyser);
+    micStatus.textContent = '麦克风已开启，对着声源发声，观察波形与分贝变化。';
+    loop();
+  }catch(e){
+    micStatus.textContent = '麦克风授权失败或不可用：'+e.message;
+  }
+}
+
+function stopAll(){
+  if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream=null; }
+  if(demoOsc){ demoOsc.stop(); demoOsc=null; }
+  if(demoNoiseNode){ demoNoiseNode.stop(); demoNoiseNode=null; }
+  analyser=null;
+  cancelAnimationFrame(rafId);
+  dbNum.textContent='--'; dbFill.style.width='0%';
+}
+
+document.getElementById('btnFreeze').onclick = ()=>{
+  if(!analyser){ micStatus.textContent='请先开启麦克风或播放演示，再定格。'; return; }
+  const buf = new Uint8Array(analyser.fftSize);
+  analyser.getByteTimeDomainData(buf);
+  frozenData = new Uint8Array(buf);
+  frozen = true;
+  frozenLabel = '📸 已定格';
+  drawWave(frozenData);
+  micStatus.textContent='波形已定格，停止后仍保留；点“清空画面”可清除。';
+};
+
+document.getElementById('btnClear').onclick = ()=>{
+  frozen=false; frozenData=null; frozenLabel='';
+  sctx.clearRect(0,0,scope.width,scope.height);
+  dbNum.textContent='--'; dbFill.style.width='0%';
+  micStatus.textContent='画面已清空。';
+};
+
+document.getElementById('demoTone').onclick = ()=>{
+  stopAll();
+  frozen=false; frozenData=null; frozenLabel='';
+  audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)();
+  demoOsc = audioCtx.createOscillator();
+  demoGain = audioCtx.createGain();
+  demoOsc.type='sine'; demoOsc.frequency.value=440;
+  demoGain.gain.value=0.15;
+  demoOsc.connect(demoGain).connect(audioCtx.destination);
+  demoOsc.connect(analyser = audioCtx.createAnalyser());
+  analyser.fftSize=2048;
+  demoOsc.start();
+  micStatus.textContent='播放乐音（440Hz 正弦）：规则周期性波形。';
+  loop();
+};
+
+document.getElementById('demoNoise').onclick = ()=>{
+  stopAll();
+  frozen=false; frozenData=null; frozenLabel='';
+  audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)();
+  const len = audioCtx.sampleRate*1;
+  const buffer = audioCtx.createBuffer(1,len,audioCtx.sampleRate);
+  const out = buffer.getChannelData(0);
+  for(let i=0;i<len;i++) out[i]=Math.random()*2-1;
+  demoNoiseNode = audioCtx.createBufferSource();
+  demoNoiseNode.buffer=buffer; demoNoiseNode.loop=true;
+  const g=audioCtx.createGain(); g.gain.value=0.2;
+  demoNoiseNode.connect(g).connect(audioCtx.destination);
+  analyser = audioCtx.createAnalyser(); analyser.fftSize=2048;
+  demoNoiseNode.connect(analyser);
+  demoNoiseNode.start();
+  micStatus.textContent='播放白噪声：波形杂乱无规律。';
+  loop();
+};
+
+document.getElementById('btnMic').onclick = startMic;
+document.getElementById('btnStop').onclick = ()=>{ stopAll(); micStatus.textContent='已停止（定格波形仍保留在画面）。'; };
+</script>
+</body>
+</html>
